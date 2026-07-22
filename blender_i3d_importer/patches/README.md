@@ -13,6 +13,7 @@ an imported `.i3d` through the official Giants i3d Exporter
 | `02-giants-exporter-emissive-color-default.patch` | Every material gets `emissiveColor="1 1 1 1"` in the re-exported i3d | Recommended for all round-trip workflows |
 | `03-giants-exporter-mergegroup-nobindpose.patch` | Re-exported MergeGroups end up in root space (FS22-style) → child positions shift on re-import, GE's *dissolve merge group* corrupts mesh/normals/UVs | Recommended for all round-trip workflows that touch MergeGroups |
 | `04-giants-exporter-xmlconfig-rna-idprop-mirror.patch` | i3dMappings typed into the exporter's UI are **not** written to the config XML on *Update XML* (Blender 5.1+) | Recommended on Blender 5.1+ whenever you add/edit i3dMappings in the exporter UI |
+| `05-giants-exporter-selected-material-slot-sync.patch` | Exporter *Selected Material* dropdown does not follow the Material-Properties slot selection on multi-material meshes (typical for imported i3ds) | Recommended whenever you edit shader settings on multi-material meshes |
 
 ## Where to find the Giants Exporter
 
@@ -275,6 +276,38 @@ so the mirror cannot recurse.
 > **Note:** covers Object nodes. Bone i3dMappings are edited on `EditBone`
 > while the export reads `Bone` IDProperties — the same registration is patched
 > for `EditBone`, but the object case is the common one.
+
+---
+
+## Patch 05 — *Selected Material* dropdown ignores the active material slot
+
+### Symptom
+
+Selecting a different material in Blender's **Material Properties** tab does
+**not** update the exporter's *Selected Material* dropdown (so the shader panel
+keeps showing the first material). Reproducible on any mesh with more than one
+material — which is most **imported** i3d meshes (multi-material shapes). On a
+single-material mesh it appears to work because object and material are 1:1.
+
+### Cause
+
+The exporter's modal (`i3d_ui.py`, `I3D_OT_...active_object.modal`) only syncs
+`i3D_selectedMaterialEnum` when the active **object** changes, reading that
+object's `active_material` (slot 0). Changing the material *slot* does not change
+the object, so the dropdown never follows the slot. This object-only gate was
+intentional (to avoid overwriting a manual dropdown pick every tick), but it
+leaves multi-material meshes unsynced.
+
+### Fix — also sync on active-material change (edge-triggered)
+
+**File:** `io_export_i3d_10_0_x/i3d_ui.py`
+
+Track the last active material name and re-sync the dropdown when either the
+object **or** its `active_material` changes. Because the trigger is the material
+name (which a manual dropdown pick does *not* change), a manual pick is still
+preserved until you change the actual slot in Blender. See
+`05-giants-exporter-selected-material-slot-sync.patch` for the exact hunks (a
+new `g_lastActiveMaterialName` global plus the modal update).
 
 ---
 
