@@ -128,6 +128,9 @@ SCENE_ATTR_MAP: Dict[str, Tuple[str, Callable]] = {
     # this mapping the XML attribute falls into _i3d_raw_occluder and is lost on
     # re-export, so i3dConverter.exe no longer marks the shape as occluder.
     'occluder':                     ('i3D_oc',                           _to_bool),
+    # oc: FS15 writes the short form directly (occluder attr didn't exist yet)
+    # - same target property as 'occluder' above (FS17+).
+    'oc':                           ('i3D_oc',                           _to_bool),
     'mergeGroup':                   ('i3D_mergeGroup',                   _to_int),
     'mergeGroupRoot':               ('i3D_mergeGroupRoot',               _to_bool),
     'boundingVolume':               ('i3D_boundingVolume',               _to_str),
@@ -157,6 +160,11 @@ SCENE_ATTR_MAP: Dict[str, Tuple[str, Callable]] = {
     'angularDamping':               ('i3D_angularDamping',               _to_float),
     'solverIterationCount':         ('i3D_solverIterationCount',         _to_int),
     'ccd':                          ('i3D_ccd',                          _to_bool),
+    # rollingFriction/skinWidth: FS15/17/19 physics-material attrs (6215x /
+    # occasional in the old-format scan). No FS22/25 samples seen but the
+    # exporter's SETTINGS_ATTRIBUTES declares the same i3D_-prefixed names.
+    'rollingFriction':              ('i3D_rollingFriction',              _to_float),
+    'skinWidth':                    ('i3D_skinWidth',                    _to_float),
 
     # Physics - joints / drive
     'joint':                        ('i3D_joint',                        _to_bool),
@@ -197,6 +205,9 @@ SCENE_ATTR_MAP: Dict[str, Tuple[str, Callable]] = {
     'splitMaxU':                    ('i3D_splitMaxU',                    _to_float),
     'splitMaxV':                    ('i3D_splitMaxV',                    _to_float),
     'splitUvWorldScale':            ('i3D_splitUvWorldScale',            _to_float),
+    # distanceBlending: FS15/17/19 terrain-decal / split-mesh attribute (334x
+    # in the old-format scan).
+    'distanceBlending':             ('i3D_distanceBlending',             _to_bool),
 
     # Light-specific attributes that the exporter knows as object properties.
     # (type/color/range/coneAngle/dropOff/emitDiffuse/emitSpecular deliberately

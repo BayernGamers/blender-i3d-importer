@@ -64,15 +64,18 @@ SHAPE_HIGH_BIT_CPU_MESH = 0x01000000
 
 
 class _ByteReader:
-    """Plain little-endian binary reader over a bytes object.
+    """Plain binary reader over a bytes object.
 
     Used to decode the *already decrypted* per-entity bytes. The cipher has
     already been applied at the container level (i3d_shapes_reader).
+    Endianness matches the container: version < 4 (FS15 v2/v3) is
+    big-endian, version >= 4 is little-endian (i3d_shapes_reader.py:397).
     """
 
-    def __init__(self, data: bytes):
+    def __init__(self, data: bytes, little_endian: bool = True):
         self._data = data
         self._pos = 0
+        self._e = "<" if little_endian else ">"
 
     @property
     def pos(self) -> int:
@@ -109,19 +112,19 @@ class _ByteReader:
         return self.read_bytes(1)[0]
 
     def read_uint16(self) -> int:
-        return struct.unpack("<H", self.read_bytes(2))[0]
+        return struct.unpack(f"{self._e}H", self.read_bytes(2))[0]
 
     def read_int16(self) -> int:
-        return struct.unpack("<h", self.read_bytes(2))[0]
+        return struct.unpack(f"{self._e}h", self.read_bytes(2))[0]
 
     def read_uint32(self) -> int:
-        return struct.unpack("<I", self.read_bytes(4))[0]
+        return struct.unpack(f"{self._e}I", self.read_bytes(4))[0]
 
     def read_int32(self) -> int:
-        return struct.unpack("<i", self.read_bytes(4))[0]
+        return struct.unpack(f"{self._e}i", self.read_bytes(4))[0]
 
     def read_single(self) -> float:
-        return struct.unpack("<f", self.read_bytes(4))[0]
+        return struct.unpack(f"{self._e}f", self.read_bytes(4))[0]
 
     def align(self, word_size: int = 4):
         """Skip padding bytes to the next word_size-aligned position.
@@ -391,7 +394,8 @@ def parse_shape_entity(raw_entity, file_version: int) -> Shape:
     if raw_entity.entity_type.name != "SHAPE":
         raise ValueError(f"Expected SHAPE entity, got {raw_entity.entity_type.name}")
 
-    r = _ByteReader(raw_entity.data)
+    little_endian = file_version >= 4
+    r = _ByteReader(raw_entity.data, little_endian=little_endian)
     sh = Shape()
     sh.name, sh.id = _read_part_header(r)
     sh.file_version = file_version
@@ -474,24 +478,24 @@ def parse_shape_entity(raw_entity, file_version: int) -> Shape:
     # Indices are stored as (real-1); +1 restores them (I3DTri.cs).
     _ic = "I" if is_int_index else "H"
     _isz = 4 if is_int_index else 2
-    _tv = struct.unpack(f"<{num_triangles * 3}{_ic}",
+    _tv = struct.unpack(f"{r._e}{num_triangles * 3}{_ic}",
                         r.read_bytes(num_triangles * 3 * _isz))
     sh.triangles = [Triangle(_tv[i] + 1, _tv[i + 1] + 1, _tv[i + 2] + 1)
                     for i in range(0, len(_tv), 3)]
     r.align(4)
 
-    _pv = struct.unpack(f"<{vertex_count * 3}f", r.read_bytes(vertex_count * 12))
+    _pv = struct.unpack(f"{r._e}{vertex_count * 3}f", r.read_bytes(vertex_count * 12))
     sh.positions = [Vector3(_pv[i], _pv[i + 1], _pv[i + 2])
                     for i in range(0, len(_pv), 3)]
 
     if sh.options & ShapeOptions.HAS_NORMALS:
-        _nv = struct.unpack(f"<{vertex_count * 3}f", r.read_bytes(vertex_count * 12))
+        _nv = struct.unpack(f"{r._e}{vertex_count * 3}f", r.read_bytes(vertex_count * 12))
         sh.normals = [Vector3(_nv[i], _nv[i + 1], _nv[i + 2])
                       for i in range(0, len(_nv), 3)]
 
     if sh.options & ShapeOptions.HAS_TANGENTS:
         if file_version >= VERSION_WITH_TANGENTS:
-            _gv = struct.unpack(f"<{vertex_count * 4}f", r.read_bytes(vertex_count * 16))
+            _gv = struct.unpack(f"{r._e}{vertex_count * 4}f", r.read_bytes(vertex_count * 16))
             sh.tangents = [Vector4(_gv[i], _gv[i + 1], _gv[i + 2], _gv[i + 3])
                            for i in range(0, len(_gv), 4)]
         else:
@@ -501,7 +505,7 @@ def parse_shape_entity(raw_entity, file_version: int) -> Shape:
     for uv_set_idx in range(4):
         flag = ShapeOptions(int(ShapeOptions.HAS_UV1) << uv_set_idx)
         if sh.options & flag:
-            _uv = struct.unpack(f"<{vertex_count * 2}f", r.read_bytes(vertex_count * 8))
+            _uv = struct.unpack(f"{r._e}{vertex_count * 2}f", r.read_bytes(vertex_count * 8))
             # File versions 4-5 stored V before U (per I3DUV.cs).
             if 4 <= file_version <= 5:
                 sh.uv_sets[uv_set_idx] = [UV(_uv[i + 1], _uv[i])
@@ -511,7 +515,7 @@ def parse_shape_entity(raw_entity, file_version: int) -> Shape:
                                           for i in range(0, len(_uv), 2)]
 
     if sh.options & ShapeOptions.HAS_VERTEX_COLOR:
-        _cv = struct.unpack(f"<{vertex_count * 4}f", r.read_bytes(vertex_count * 16))
+        _cv = struct.unpack(f"{r._e}{vertex_count * 4}f", r.read_bytes(vertex_count * 16))
         sh.vertex_colors = [Vector4(_cv[i], _cv[i + 1], _cv[i + 2], _cv[i + 3])
                             for i in range(0, len(_cv), 4)]
 
@@ -520,7 +524,7 @@ def parse_shape_entity(raw_entity, file_version: int) -> Shape:
         num_indices_per_vertex = 1 if sh.is_single_blend_weights else 4
 
         if not sh.is_single_blend_weights:
-            _wv = struct.unpack(f"<{vertex_count * 4}f", r.read_bytes(vertex_count * 16))
+            _wv = struct.unpack(f"{r._e}{vertex_count * 4}f", r.read_bytes(vertex_count * 16))
             sh.blend_weights = [(_wv[i], _wv[i + 1], _wv[i + 2], _wv[i + 3])
                                 for i in range(0, len(_wv), 4)]
 
@@ -529,7 +533,7 @@ def parse_shape_entity(raw_entity, file_version: int) -> Shape:
                             for i in range(0, len(_ib), num_indices_per_vertex)]
 
     if sh.options & ShapeOptions.HAS_GENERIC:
-        sh.generic_data = list(struct.unpack(f"<{vertex_count}f",
+        sh.generic_data = list(struct.unpack(f"{r._e}{vertex_count}f",
                                              r.read_bytes(vertex_count * 4)))
 
     # Attachments block is optional in practice — some FS25 shapes (v10) end
@@ -599,7 +603,7 @@ def parse_spline_entity(raw_entity, file_version: int) -> Spline:
     if kind not in ("SPLINE", "SPLINE_L"):
         raise ValueError(f"Expected SPLINE/SPLINE_L entity, got {kind}")
 
-    r = _ByteReader(raw_entity.data)
+    r = _ByteReader(raw_entity.data, little_endian=file_version >= 4)
     sp = Spline()
     sp.name, sp.id = _read_part_header(r)
     sp.kind = kind

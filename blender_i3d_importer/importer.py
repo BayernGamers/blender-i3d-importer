@@ -32,6 +32,7 @@ from . import i3d_xml_parser
 from . import i3d_shapes_reader
 from . import i3d_shapes_models
 from . import i3d_shapes_to_meshdata
+from . import i3d_inline_shapes
 from . import recipe_loader
 
 # Default paths. Overridden in import_i3d() when the add-on is invoked via
@@ -196,14 +197,21 @@ def import_i3d(i3d_filepath: str, report: Callable = None,
     else:
         roots_to_process = scene.roots
 
-    # 2. Inline shape data: in practice only in data/sky/*.i3d
-    # as <Precipitation> (weather particle spawner, no mesh geometry).
-    # Instead of aborting: WARNING + skip. Re-export is lost for these special
-    # shapes; hierarchy / lights / cameras / ReferenceNodes still come through.
+    # 2. Inline shape data: <IndexedTriangleSet>/<NurbsCurve> children of
+    # <Shapes> carry decodable geometry (i3d_inline_shapes) - merged into
+    # shape_map/spline_map below, before the .i3d.shapes file is opened.
+    # Anything else inline (e.g. <Precipitation>, weather particle spawner,
+    # no mesh geometry) has no decoder: WARNING + skip. Re-export is lost for
+    # those special shapes; hierarchy / lights / cameras / ReferenceNodes
+    # still come through.
     if scene.has_inline_shapes:
-        _report('WARNING',
-                "Inline shape data detected in XML (e.g. <Precipitation>) - "
-                "will NOT be imported. Hierarchy/lights/cameras come through.")
+        _report('INFO',
+                f"{len(scene.inline_shape_elems)} inline shape(s) "
+                f"(<IndexedTriangleSet>/<NurbsCurve>) found in XML.")
+        for tag, count in scene.inline_unsupported_tags.items():
+            _report('WARNING',
+                    f"Inline <{tag}> ({count}x) has no decoder - will NOT be "
+                    f"imported. Hierarchy/lights/cameras come through.")
 
     # 2b. Shape presence check: tool + .i3d.shapes only needed when
     # the scene actually contains <Shape> nodes. Hierarchy-only files (e.g.
@@ -237,12 +245,59 @@ def import_i3d(i3d_filepath: str, report: Callable = None,
         # container entity_type (SHAPE vs SPLINE/SPLINE_L) decides which path
         # is taken in _create_mesh_object.
         spline_map: Dict[int, "i3d_shapes_models.Spline"] = {}
+        shapes_binary_version = None  # ShapesFile.header.version, set below if a .i3d.shapes was read
 
-        if has_shapes:
-            shapes_file = i3d_dir / (i3d.name + ".shapes")
+        # Merge decodable inline geometry (<IndexedTriangleSet>/<NurbsCurve>)
+        # into shape_map/spline_map first. Only shapeIds not covered here
+        # need the .i3d.shapes binary at all (see needed_from_binary below).
+        for sid, elem in scene.inline_shape_elems.items():
+            decoder = i3d_inline_shapes.GEOMETRY_TAGS.get(elem.tag)
+            if decoder is None:
+                continue
+            try:
+                decoded = decoder(elem)
+            except Exception as e:
+                _report('WARNING',
+                        f"Failed to decode inline <{elem.tag}> shapeId {sid}: "
+                        f"{type(e).__name__}: {e}")
+                continue
+            if elem.tag == 'NurbsCurve':
+                spline_map[sid] = decoded
+            else:
+                shape_map[sid] = decoded
+
+        referenced_shape_ids: set = set()
+        for r in roots_to_process:
+            _collect_shape_ids(r, referenced_shape_ids)
+        needed_from_binary = referenced_shape_ids - set(shape_map) - set(spline_map)
+
+        if has_shapes and needed_from_binary:
+            fallback_shapes_file = i3d_dir / (i3d.name + ".shapes")
+            shapes_file = fallback_shapes_file
+            if scene.external_shapes_file:
+                candidate = (i3d_dir / scene.external_shapes_file).resolve()
+                if candidate.exists():
+                    shapes_file = candidate
+                elif fallback_shapes_file.exists():
+                    _report('WARNING',
+                            f"Shapes/@externalShapesFile '{scene.external_shapes_file}' "
+                            f"not found next to {i3d.name}, falling back to "
+                            f"{fallback_shapes_file.name}.")
+                else:
+                    shapes_file = candidate  # neither exists - report the XML-named path below
             if not shapes_file.exists():
-                raise FileNotFoundError(f"No .i3d.shapes file found next to {i3d.name}.")
+                if scene.inline_shape_elems:
+                    _report('WARNING',
+                            f"No .i3d.shapes file found next to {i3d.name} - "
+                            f"{len(needed_from_binary)} shape(s) not covered by "
+                            f"inline XML geometry will be missing.")
+                    shapes_file = None
+                else:
+                    raise FileNotFoundError(f"No .i3d.shapes file found next to {i3d.name}.")
+        else:
+            shapes_file = None
 
+        if shapes_file is not None:
             call_start_time = time.time()
             _report('INFO', f"Reading shapes binary: {shapes_file.name}")
             _t_read = time.perf_counter()
@@ -252,6 +307,7 @@ def import_i3d(i3d_filepath: str, report: Callable = None,
                 raise RuntimeError(
                     f"Failed to decode {shapes_file.name}: {type(e).__name__}: {e}"
                 ) from e
+            shapes_binary_version = shapes_container.header.version
             _read_secs = time.perf_counter() - _t_read
             _shapes_backend = ("numpy" if getattr(i3d_shapes_reader, "USE_NUMPY", False)
                                and getattr(i3d_shapes_reader, "_np", None) is not None
@@ -319,6 +375,12 @@ def import_i3d(i3d_filepath: str, report: Callable = None,
                     f"Decoded {len(shape_map)} shape(s) + "
                     f"{len(spline_map)} spline(s) "
                     f"in {elapsed:.2f}s")
+        elif has_shapes and not needed_from_binary:
+            _report('INFO',
+                    f"All {len(referenced_shape_ids)} shape(s) resolved from "
+                    f"inline XML geometry - skipping .i3d.shapes binary.")
+        elif has_shapes:
+            pass  # partial inline coverage, missing .i3d.shapes already warned above
         else:
             _report('INFO',
                     "No shape nodes in scene - skipping shapes binary "
@@ -333,6 +395,23 @@ def import_i3d(i3d_filepath: str, report: Callable = None,
             collection_name = f"{collection_name}.{n:03d}"
         import_collection = bpy.data.collections.new(collection_name)
         bpy.context.scene.collection.children.link(import_collection)
+
+        # Source-format era reporting. shapes v5 alone cannot distinguish
+        # FS17 from FS19 (both v5, both XML schema 1.6) - report the version
+        # pair, not a single game name.
+        if scene.xml_version is not None:
+            import_collection['i3D_sourceXmlVersion'] = scene.xml_version
+        if shapes_binary_version is not None:
+            import_collection['i3D_sourceShapesVersion'] = shapes_binary_version
+            if shapes_binary_version < 4:
+                _era = f"FS15-era (XML {scene.xml_version}, shapes v{shapes_binary_version}, big-endian)"
+            elif shapes_binary_version in (4, 5):
+                _era = f"FS17/FS19-era (XML {scene.xml_version}, shapes v{shapes_binary_version})"
+            elif shapes_binary_version in (7,):
+                _era = f"FS19 patch/DLC-era (XML {scene.xml_version}, shapes v{shapes_binary_version})"
+            else:
+                _era = f"FS22/FS25-era (XML {scene.xml_version}, shapes v{shapes_binary_version})"
+            _report('INFO', f"Source: {_era}")
 
         # 6. Per-import caches (NOT global - see architecture decision)
         mesh_cache: Dict[Tuple[int, Tuple[int, ...]], bpy.types.Mesh] = {}
@@ -532,6 +611,14 @@ def _has_any_shape_nodes(node) -> bool:
     if node.kind == 'Shape':
         return True
     return any(_has_any_shape_nodes(c) for c in node.children)
+
+
+def _collect_shape_ids(node, out: set):
+    """Recursively collect every shapeId referenced by a Shape node under `node`."""
+    if node.kind == 'Shape' and node.shapeId is not None:
+        out.add(node.shapeId)
+    for c in node.children:
+        _collect_shape_ids(c, out)
 
 
 def _strip_sort_prefix(name):
@@ -2099,6 +2186,20 @@ def _build_material(material_id, scene, image_cache, shader_cache, i3d_dir, repo
     if gm_node is not None:
         nt.links.new(gm_node.outputs['Color'], bsdf.inputs['Roughness'])
 
+    # 5. Emissivemap -> Emission Color (+ Strength=1, otherwise the default
+    # Strength=0 workaround above would hide it again).
+    em_node = _add_image_node(mat_attrs.get('_emissivemap_fileId'),
+                              location=(-700, -600), non_color=False)
+    if em_node is not None and 'Emission Color' in bsdf.inputs:
+        nt.links.new(em_node.outputs['Color'], bsdf.inputs['Emission Color'])
+        if 'Emission Strength' in bsdf.inputs:
+            bsdf.inputs['Emission Strength'].default_value = 1.0
+
+    # Reflectionmap/Refractionmap/DepthBlendmap: FS shader-specific inputs with
+    # no direct Principled BSDF equivalent - no shader-node guessing. Stored as
+    # custom properties only (_apply_material_custom_properties) so the fileId
+    # is preserved for re-export/inspection, nothing is silently lost.
+
     # Re-export materials intentionally don't get the fs25_debug:* switch -
     # the Mix Shader before Material Output would break re-export through
     # the Giants i3d Exporter. Debug-view lives only on the PBR debug
@@ -2163,9 +2264,24 @@ def _apply_material_custom_properties(mat, mat_attrs, scene, report, mat_name):
     bpy.data.materials datablock (schema: Giants i3d Exporter, verified in
     io_export_i3d_*/dcc/dccBlender.py 1742-1769).
 
-    Standard Texture/Normalmap/Glossmap need NO custom property - the exporter
-    derives them from the image-texture nodes in the shader graph.
+    Standard Texture/Normalmap/Glossmap/Emissivemap need NO custom property -
+    the exporter derives them from the image-texture nodes in the shader graph.
     """
+    # Reflectionmap/Refractionmap/DepthBlendmap: no shader-node wiring (no
+    # direct Principled BSDF equivalent), stored as custom properties only so
+    # the fileId -> path is preserved for inspection / a future re-export path.
+    for key, prop_name in (('_reflectionmap_fileId', 'reflectionMap'),
+                           ('_refractionmap_fileId', 'refractionMap'),
+                           ('_depthblendmap_fileId', 'depthBlendMap')):
+        fid = mat_attrs.get(key)
+        if fid is None:
+            continue
+        path = scene.files.get(fid)
+        if path:
+            mat[prop_name] = path
+        else:
+            report('WARNING',
+                   f"Material '{mat_name}': {prop_name} fileId {fid} not in <Files>")
     # customShader - path from customShaderId via Files map
     csi = mat_attrs.get('customShaderId')
     if csi is not None:
