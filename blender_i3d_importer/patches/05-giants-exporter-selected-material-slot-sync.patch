@@ -1,0 +1,46 @@
+--- i3d_ui.py (original, io_export_i3d_10_0_2)
++++ i3d_ui.py (patched — Selected-Material follows active material slot)
+@@ -58,6 +58,10 @@
+ g_disableTemplatedParameterUpdatedCallback = False
+ g_disableParameterTemplateSelectedCallback = False
+ g_disableSelectedMaterialEnumUpdateCallback = False
++# Patch FS25-i3d-Importer: last active material name seen by the modal, so the
++# Selected-Material dropdown can follow the Material-Properties slot selection
++# (multi-material meshes, e.g. imported i3ds) without overwriting a manual pick.
++g_lastActiveMaterialName = None
+ g_disableTemplateSelectedForParameterCallback = False
+ g_disableShaderVariationEnumUpdateCallback = False
+ g_shaderEnumToFolder = {}
+@@ -2609,17 +2613,24 @@
+                             if valNode != valProp:
+                                 dcc.I3DSaveObjectAttributes()
+ 
+-        # Update selected material — only when the active OBJECT changes, otherwise
+-        # the user's manual choice in the i3D_selectedMaterialEnum dropdown would be
+-        # overwritten on every modal tick (breaking multi-material shapes).
++        # Update selected material when the active OBJECT changes OR the active
++        # object's active_material changes (Patch FS25-i3d-Importer). The active
++        # material follows the Material-Properties slot selection, so multi-material
++        # meshes (e.g. imported i3ds) now sync the Selected-Material dropdown too.
++        # It is edge-triggered on the material NAME, so a manual dropdown pick -
++        # which does not change active_material - is not overwritten on the next
++        # tick; only a real slot change in Blender re-syncs it.
++        global g_lastActiveMaterialName
+         newObjName = activeObject.name if activeObject is not None else None
+-        if currentObjName != newObjName:
+-            activeMat = None
+-            if newObjName is not None and newObjName in bpy.data.objects:
+-                activeMat = bpy.data.objects[newObjName].active_material
++        activeMat = None
++        if newObjName is not None and newObjName in bpy.data.objects:
++            activeMat = bpy.data.objects[newObjName].active_material
++        newMatName = activeMat.name if activeMat is not None else "None"
++        if currentObjName != newObjName or g_lastActiveMaterialName != newMatName:
+             g_disableSelectedMaterialEnumUpdateCallback = True
+-            bpy.data.scenes[context.scene.name].I3D_UIexportSettings.i3D_selectedMaterialEnum = activeMat.name if activeMat != None else "None"
++            bpy.data.scenes[context.scene.name].I3D_UIexportSettings.i3D_selectedMaterialEnum = newMatName
+             g_disableSelectedMaterialEnumUpdateCallback = False
++            g_lastActiveMaterialName = newMatName
+ 
+         if activeObject is not None:
+             bpy.data.scenes[context.scene.name].I3D_UIexportSettings.UI_ActiveObjectName = activeObject.name
