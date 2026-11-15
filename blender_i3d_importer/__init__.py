@@ -12,7 +12,7 @@ Decodes the *.i3d.shapes binary directly in Python — no external tool needed.
 bl_info = {
     "name": "i3d Importer",
     "author": "Nadine Brinkmann",
-    "version": (0, 5, 0),
+    "version": (0, 5, 1),
     "blender": (5, 1, 0),
     "location": "File > Import > Farming Simulator i3d (.i3d)",
     "description": (
@@ -52,6 +52,8 @@ if "importer" in locals():
     importlib.reload(i3d_reference_loader)
     importlib.reload(i3d_wheel_resolver)
     importlib.reload(i3d_wheel_loader)
+    importlib.reload(i3d_crawler_path)
+    importlib.reload(i3d_crawler_loader)
     importlib.reload(i3d_shapes_reader)
     importlib.reload(i3d_shapes_models)
     importlib.reload(i3d_shapes_to_meshdata)
@@ -68,6 +70,8 @@ else:
     from . import i3d_reference_loader
     from . import i3d_wheel_resolver
     from . import i3d_wheel_loader
+    from . import i3d_crawler_path
+    from . import i3d_crawler_loader
     from . import i3d_shapes_reader
     from . import i3d_shapes_models
     from . import i3d_shapes_to_meshdata
@@ -100,6 +104,28 @@ DEFAULT_TERRAIN_POC_LAYER_NAMES = "ASPHALT,GRASS,MUD,FOREST_LEAVES,FOREST_GRASS"
 MAX_TERRAIN_POC_LAYERS = 5
 
 
+def _normalized_data_base(path):
+    """Tolerate the common mistake of pointing the game-folder preference at
+    the 'data' subfolder instead of the game root (#47).
+
+    Returns (normalized_path, note). note is None when the path is fine,
+    otherwise a human-readable message: either the auto-correction that was
+    applied (path ended in a 'data' folder -> parent used) or a warning that
+    no 'data' subfolder was found ($data/ resolution will fail)."""
+    p = (path or "").rstrip("\\/")
+    if not p:
+        return path, None
+    if os.path.isdir(os.path.join(p, "data")):
+        return p, None                       # correct: game root
+    if (os.path.basename(p).lower() == "data"
+            and os.path.isdir(os.path.join(p, "shaders"))):
+        parent = os.path.dirname(p)          # user pointed at .../data
+        return parent, (f"FS25 game folder: {path!r} is the data subfolder - "
+                        f"using {parent!r} instead")
+    return p, (f"FS25 game folder: no 'data' subfolder found in {path!r} - "
+               f"$data/ textures and shader XMLs will not resolve")
+
+
 class FS25_OT_terrain_base_color_reset(Operator):
     """Reset the 'Terrain base color' preference back to the default
     (linear conversion of sRGB #343A1D)."""
@@ -124,11 +150,14 @@ class FS25I3DImporterPreferences(AddonPreferences):
     bl_idname = __package__
 
     fs25_data_base: StringProperty(
-        name="FS25 game data folder (required)",
-        description="Folder containing 'data/' — used for $data/-path resolution "
-                    "(textures, shader XMLs). Also written automatically into "
-                    "the Game Location Setting of the Giants i3d Exporter "
-                    "on every import for convenience.",
+        name="FS25 game folder (required)",
+        description="Your Farming Simulator 25 installation folder — the one "
+                    "that CONTAINS the 'data' subfolder, e.g. "
+                    "...\\steamapps\\common\\Farming Simulator 25. Do not "
+                    "select the data folder itself. Used for $data/-path "
+                    "resolution (textures, shader XMLs). Also written "
+                    "automatically into the Game Location Setting of the "
+                    "Giants i3d Exporter on every import for convenience.",
         subtype='DIR_PATH',
         default=DEFAULT_FS25_DATA_BASE,
     )
@@ -381,16 +410,16 @@ class IMPORT_OT_fs25_i3d(Operator, ImportHelper):
     def execute(self, context):
         prefs = context.preferences.addons[__package__].preferences
 
-        # Mandatory: FS25 game data folder must be set + exist.
+        # Mandatory: FS25 game folder must be set + exist.
         # Without it $data/-path resolution fails and the Giants exporter
         # is misconfigured (gameLocation = "\").
         data_base = prefs.fs25_data_base
         if not data_base or not os.path.isdir(data_base):
             def _draw_popup(self_, ctx_):
                 if not data_base:
-                    self_.layout.label(text="FS25 game data folder is not set.")
+                    self_.layout.label(text="FS25 game folder is not set.")
                 else:
-                    self_.layout.label(text="FS25 game data folder does not exist:")
+                    self_.layout.label(text="FS25 game folder does not exist:")
                     self_.layout.label(text=f"  {data_base}")
                 self_.layout.separator()
                 self_.layout.label(text="Please set it in the add-on preferences.")
@@ -404,8 +433,14 @@ class IMPORT_OT_fs25_i3d(Operator, ImportHelper):
             except Exception:
                 pass
             self.report({'ERROR'},
-                        "FS25 game data folder not configured - import cancelled")
+                        "FS25 game folder not configured - import cancelled")
             return {'CANCELLED'}
+
+        # Tolerate the .../data mistake and warn when the folder looks wrong (#47).
+        data_base, _db_note = _normalized_data_base(data_base)
+        if _db_note:
+            self.report({'WARNING'} if "not resolve" in _db_note else {'INFO'},
+                        _db_note)
 
         try:
             _before = set(bpy.data.objects)
@@ -430,7 +465,7 @@ class IMPORT_OT_fs25_i3d(Operator, ImportHelper):
                 terrain_lod=self.terrain_lod,
                 terrain_base_color=tuple(self.terrain_base_color),
                 terrain_poc_layer_names=self.terrain_poc_layer_names,
-                fs25_data_base=prefs.fs25_data_base,
+                fs25_data_base=data_base,
                 export_dir=prefs.export_dir,
                 snippets_blend_path=DEFAULT_SNIPPETS_BLEND_PATH,
             )
@@ -1692,7 +1727,8 @@ def _i3d_mapping_id_set(self, value):
 
 def _fs25_data_base():
     try:
-        return bpy.context.preferences.addons[__package__].preferences.fs25_data_base
+        raw = bpy.context.preferences.addons[__package__].preferences.fs25_data_base
+        return _normalized_data_base(raw)[0]   # silent .../data auto-correct (#47)
     except Exception:
         return ""
 
@@ -1913,6 +1949,9 @@ def _reload_wheels(context, import_id, entry, config_index, dim_col=0):
     brand = entry.get("brand", {}).get("sel", 0)
     i3d_wheel_loader.load_all_wheels(xml, data_dir, import_id, config_index,
                                      brand_index=brand, dim_col=dim_col)
+    # Crawler tracks (Raupenfahrwerke) live in a parallel <crawlers> section
+    # of the same wheelConfiguration; no-op when the config has none.
+    i3d_crawler_loader.load_crawlers(xml, data_dir, import_id, config_index)
     rc = entry.get("rimcolor")
     if rc and rc.get("options"):
         sel = rc.get("sel", 0)
@@ -2180,6 +2219,10 @@ class FS25_OT_unload_wheels(Operator):
             entry.pop("brand", None)
             context.scene['_i3d_storecfg'] = json.dumps(store)
         n = i3d_wheel_loader.remove_wheels(import_id)
+        # Crawler tracks are loaded dynamically by the game too, so 'None' must
+        # strip them as well - otherwise a re-export would bake in the (wrapped)
+        # track band.
+        n_crawl = i3d_crawler_loader.remove_crawlers(import_id)
         i3d_wheel_loader._purge_empty_ref_collections()
         # Leave no residue: baked wheel meshes are now user-less, and their
         # pristine pre-bake datablocks are pinned only by our fake user
@@ -2200,8 +2243,9 @@ class FS25_OT_unload_wheels(Operator):
                     n_mesh += 1
             except Exception:
                 pass
-        self.report({'INFO'}, "Removed %d wheel part(s), purged %d mesh(es)."
-                    % (n, n_mesh))
+        self.report({'INFO'},
+                    "Removed %d wheel part(s), %d crawler object(s), purged "
+                    "%d mesh(es)." % (n, n_crawl, n_mesh))
         return {'FINISHED'}
 
 
@@ -2613,3 +2657,4 @@ def unregister():
 
 if __name__ == "__main__":
     register()
+    
