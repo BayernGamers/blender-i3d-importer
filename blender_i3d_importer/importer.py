@@ -3571,13 +3571,20 @@ def _process_merge_groups(import_collection, shape_map, shape_id_to_obj, report)
             if is_root_member:
                 root_member_obj = source_obj
             # Root-space merge groups (noBindPose flag absent on the shape) need
-            # the post-axis local-space fix, mapped from the ROOT MEMBER's space.
+            # the post-axis local-space fix, mapped from the SHAPE CARRIER's space
+            # (the verts are stored in the space of the <Shape> node). Normally
+            # the carrier IS the root member, so slot 0 needs no remap. With an
+            # external root member (carrier converted to a container TG above)
+            # ALL slots incl. slot 0 are remapped from the carrier - mapping from
+            # the root member shifted the whole group by carrier->root-member
+            # (e.g. FS22 Claas Trion 750 chopper).
             # Bone-local shapes (FS25-Giants) skip. Covers FS22 v7 AND
             # Giants-Blender-exporter v10 outputs (#2 / #8).
-            if (not is_root_member
-                    and not getattr(shape, 'no_bind_pose', False)
-                    and root_member_obj is not None):
-                source_obj['_i3d_rootspace_mg_root'] = root_member_obj.name
+            if not getattr(shape, 'no_bind_pose', False):
+                if not own_is_root_member:
+                    source_obj['_i3d_rootspace_mg_root'] = root_obj.name
+                elif not is_root_member and root_member_obj is not None:
+                    source_obj['_i3d_rootspace_mg_root'] = root_member_obj.name
             # Inherit render-relevant properties from the carrier (only if not
             # already set on the member — e.g. _i3d_raw_* and userAttributes
             # survive).
