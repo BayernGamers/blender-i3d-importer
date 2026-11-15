@@ -1,11 +1,11 @@
 # Blender i3d Importer
 
-**The first and only Blender add-on that imports Farming Simulator 22 & 25 `.i3d` files directly — full scene, materials, textures, ready for editing, re-export-clean to the official Giants i3d Exporter.**
+**The first and only Blender add-on that imports Farming Simulator 15/17/19/22/25 `.i3d` files directly — full scene, materials, textures, ready for editing, re-export-clean to the official Giants i3d Exporter (FS22/25).**
 
 > 📖 **New here? Read the [Wiki](https://github.com/nadine-brinkmann/blender-i3d-importer/wiki)** for the full guide: installation, the import/export workflow, the N-panel tools and preferences, all with screenshots.
 
-No external extraction tool, no command-line gymnastics: the `.i3d.shapes` binary is decoded natively in Python. Geometry, splines, skin weights, lights, cameras, references, notes, terrain — everything that ships in an FS22/FS25 i3d file becomes proper Blender datablocks you can inspect,
-modify, and (mostly) round-trip back into the Giants Editor through the Giants i3d Exporter.
+No external extraction tool, no command-line gymnastics: the `.i3d.shapes` binary is decoded natively in Python (versions 2 through 10, big- and little-endian). Geometry, splines, skin weights, lights, cameras, references, notes, terrain — everything that ships in an FS15/17/19/22/25 i3d file becomes proper Blender datablocks you can inspect,
+modify, and (mostly) round-trip back into the Giants Editor through the Giants i3d Exporter. Re-export stays FS22/FS25-targeted; older-format attributes are preserved as custom properties, not converted.
 
 ## Watch it in action
 
@@ -22,7 +22,8 @@ modify, and (mostly) round-trip back into the Giants Editor through the Giants i
 ### Geometry & hierarchy
 
 - Full scene tree: meshes, materials, textures, lights, cameras, splines, reference nodes (with patch for the exporter), also terrain!
-- Native Python decoder for `.i3d.shapes` v7 / v9 / v10 (no external tool required)
+- Native Python decoder for `.i3d.shapes` v2 through v10 (no external tool required), including FS15's big-endian v2/v3 container
+- FS15/17/19 inline XML geometry (`<IndexedTriangleSet>`, e.g. Editor-saved / mod i3d) decoded directly, no `.i3d.shapes` needed for those shapes
 - Shared meshes are split up into individuals + merged back upon export
 - Skin weights for vehicle-implement bones - verified in-game. Joints round-trip back to their original place in the scenegraph via a shared armature + "Child Of" constraints (a leftover empty `zzz_armature` group can be deleted in the Giants Editor after import)
 - **Tree import** - full FS25 trees: detailed trunk (LOD0) and the leaf/branch attachments (LOD0Attachments), with a seasonal leaf debug material and a **Tree Season** switch (Summer/Autumn/Winter/Spring)
@@ -159,6 +160,7 @@ Vehicle and placeable config XMLs reference nodes in the i3d through an `<i3dMap
 - **Terrain is one-way.** The Giants Blender Exporter cannot emit a `<TerrainTransformGroup>`. The terrain mesh is for in-Blender preview / backgroundMesh-snapping only. The importer prints a WARNING in the log when terrain is loaded.
 - **Reference-nodes:** Sub-i3ds referenced by a node are not loaded automatically; they remain as empties with the original `i3D_referenceFilename` custom property. The Giants exporter writes them back correctly on re-export, **but only** if you apply the `referenceChildPath`-patch (see above).
 - **Skinned-mesh armature leftover.** Re-exporting a skinned mesh leaves one empty `zzz_armature` transform group in the scenegraph (the Giants exporter does not collapse armatures) at the end if the list. It is harmless and **can be deleted** in the Giants Editor; the joints themselves round-trip to their original place via "Child Of" constraints.
+- **FS15/17/19 (old-format) import is read-only.** Attributes are preserved as custom properties but not converted to the FS22/25 equivalents, and re-export always targets the FS22/25 Giants Exporter — there is no FS15/17 export path. Particle systems (`<Dynamics>` under `<Dynamic>`) and `<Animation>`/AnimationSets are not imported; `<Dynamic>`/`<AudioSource>`/`<NavigationMesh>` come through as empties with the original attributes preserved.
 
 ## License and attribution
 

@@ -1,11 +1,12 @@
 """
-FS25 i3d Importer for Blender
+i3d Importer for Blender
 
-Imports meshes from FS22/FS25 *.i3d.shapes files into Blender, including materials, all UVs, vertex colors, custom properties etc.
-Optionally creates additional materials which give the same look and feel as the materials in the Giants Editor. These additional 
+Imports meshes from FS15/17/19/22/25 .i3d(.shapes) files into Blender, including materials, all UVs, vertex colors, custom properties etc.
+Optionally creates additional materials which give the same look and feel as the materials in the Giants Editor. These additional
 materials cannot be re-exported, but the standard imported materials can (therefore 2 separate sets of materials are created
 when you use this option)
-Decodes the *.i3d.shapes binary directly in Python — no external tool needed.
+Decodes the *.i3d.shapes binary directly in Python — no external tool needed. Re-export stays FS22/FS25-targeted (Giants exporter);
+FS15/17/19 attributes are preserved as custom properties, not converted.
 
 """
 
@@ -16,12 +17,13 @@ bl_info = {
     "blender": (5, 1, 0),
     "location": "File > Import > Farming Simulator i3d (.i3d)",
     "description": (
-        "Imports Farming Simulator 22/25 .i3d files into Blender. "
+        "Imports Farming Simulator 15/17/19/22/25 .i3d files into Blender. "
         "Full scene hierarchy (meshes, splines, lights, cameras, "
         "references, notes, terrain), two material flavors "
         "(re-export-clean and PBR-debug), N-panel workflow tools, "
-        "round-trip with the Giants i3d Exporter. Native Python "
-        ".i3d.shapes decoder (v7/v9/v10) - no external tool needed."
+        "round-trip with the Giants i3d Exporter (FS22/25 only). Native "
+        "Python .i3d.shapes decoder (v2-v10, big- and little-endian) - "
+        "no external tool needed."
     ),
     "category": "Import-Export",
 }

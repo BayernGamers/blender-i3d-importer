@@ -25,12 +25,13 @@ from typing import List, Dict, Optional, Tuple
 # terrain-configuration sub-elements. _parse_node() does not recurse into
 # them; the importer reads them via node.raw_attrs / via separate lookup.
 VALID_KINDS = {'TransformGroup', 'Shape', 'Light', 'Camera', 'ReferenceNode',
-               'Note', 'TerrainTransformGroup'}
+               'Note', 'TerrainTransformGroup', 'AudioSource', 'Dynamic',
+               'NavigationMesh'}
 
 # Kinds for which _parse_node() must NOT recurse into XML children, because
 # those children are configuration data (handled by the importer separately),
 # not scene-tree nodes.
-_LEAF_KINDS = {'TerrainTransformGroup'}
+_LEAF_KINDS = {'TerrainTransformGroup', 'NavigationMesh'}
 
 
 @dataclass
@@ -92,11 +93,20 @@ class I3DScene:
     files: Dict[int, str] = field(default_factory=dict)
     # fileId -> filename (path as written in the XML, often with $data variable).
 
+    xml_version: Optional[str] = None
+    # Raw <i3D version="..."> attribute (e.g. "1.6" for FS15/17/19, "1.7"/"1.8"
+    # for FS22/25). None if missing.
+
     has_inline_shapes: bool = False
     external_shapes_file: Optional[str] = None
-    # If has_inline_shapes is True, mesh data is embedded in the XML directly
-    # and external_shapes_file is None. Importer does not support this
-    # (will abort or warn).
+    # If has_inline_shapes is True, mesh data is embedded in the XML directly.
+    # inline_shape_elems holds the raw <IndexedTriangleSet>/<NurbsCurve>
+    # elements keyed by shapeId, decoded lazily by i3d_inline_shapes in the
+    # importer (this module stays bpy-free/dependency-free). Elements with
+    # an unrecognized tag (e.g. <Precipitation>) are NOT added here - the
+    # importer keeps warning "inline but unsupported" for those.
+    inline_shape_elems: Dict[int, ET.Element] = field(default_factory=dict)
+    inline_unsupported_tags: Dict[str, int] = field(default_factory=dict)
 
     user_attributes: Dict[int, List[Tuple[str, str, str]]] = field(default_factory=dict)
     # nodeId -> list of (name, type, value_str) tuples from <UserAttributes>.
@@ -114,6 +124,7 @@ def parse_i3d(filepath: Path) -> I3DScene:
     root = tree.getroot()  # <i3D>
 
     scene = I3DScene()
+    scene.xml_version = root.get('version')
 
     files_elem     = root.find('Files')
     materials_elem = root.find('Materials')
@@ -146,9 +157,13 @@ def parse_i3d(filepath: Path) -> I3DScene:
 
             # Sub-elements: Texture, Normalmap, Glossmap (with fileId).
             # Underscore prefix avoids collision with real XML attributes.
-            for sub_tag, key in (('Texture',   '_texture_fileId'),
-                                 ('Normalmap', '_normalmap_fileId'),
-                                 ('Glossmap',  '_glossmap_fileId')):
+            for sub_tag, key in (('Texture',       '_texture_fileId'),
+                                 ('Normalmap',      '_normalmap_fileId'),
+                                 ('Glossmap',       '_glossmap_fileId'),
+                                 ('Emissivemap',    '_emissivemap_fileId'),
+                                 ('Reflectionmap',  '_reflectionmap_fileId'),
+                                 ('Refractionmap',  '_refractionmap_fileId'),
+                                 ('DepthBlendmap',  '_depthblendmap_fileId')):
                 sub = m.find(sub_tag)
                 if sub is not None:
                     file_id_str = sub.get('fileId')
@@ -191,8 +206,21 @@ def parse_i3d(filepath: Path) -> I3DScene:
         if ext:
             scene.external_shapes_file = ext
         # Direct child elements present? Then inline shape data is contained.
-        if len(list(shapes_elem)) > 0:
+        # <IndexedTriangleSet>/<NurbsCurve> are decodable (i3d_inline_shapes);
+        # everything else (<Precipitation>, ...) stays "inline but unsupported".
+        for child in shapes_elem:
             scene.has_inline_shapes = True
+            if child.tag in ('IndexedTriangleSet', 'NurbsCurve'):
+                sid_str = child.get('shapeId')
+                if sid_str is not None:
+                    try:
+                        scene.inline_shape_elems[int(sid_str)] = child
+                    except ValueError:
+                        print(f"[i3d_xml_parser] Warning: invalid shapeId "
+                              f"'{sid_str}' on inline <{child.tag}>")
+            else:
+                scene.inline_unsupported_tags[child.tag] = (
+                    scene.inline_unsupported_tags.get(child.tag, 0) + 1)
 
     if scene_elem is not None:
         for child in scene_elem:
@@ -227,11 +255,13 @@ def parse_i3d(filepath: Path) -> I3DScene:
 
 
 def _parse_node(elem: ET.Element) -> Optional[I3DSceneNode]:
-    """Recursive. Unknown tags -> None (skip, with print warning)."""
+    """Recursive. Unknown tags become an 'Unknown'-kind Empty node (all
+    attributes preserved in raw_attrs) so their subtree is not dropped;
+    the importer maps unknown kinds through the generic Empty path."""
     kind = elem.tag
     if kind not in VALID_KINDS:
-        print(f"[i3d_xml_parser] Skipping unknown scene tag: <{kind}>")
-        return None
+        print(f"[i3d_xml_parser] Unknown scene tag <{kind}> -> importing as Empty")
+        kind = 'Unknown'
 
     name      = elem.get('name', '')
     node_id   = _to_int(elem.get('nodeId'), default=-1)
@@ -254,6 +284,9 @@ def _parse_node(elem: ET.Element) -> Optional[I3DSceneNode]:
     # raw_attrs: all attributes except the ones explicitly read above
     consumed = {'name', 'nodeId', 'shapeId', 'translation', 'rotation', 'scale', 'materialIds'}
     raw_attrs = {k: v for k, v in elem.attrib.items() if k not in consumed}
+    if kind == 'Unknown':
+        # Preserve the original XML tag name for diagnostics / re-export.
+        raw_attrs['_i3d_xml_tag'] = elem.tag
 
     node = I3DSceneNode(
         nodeId      = node_id,
